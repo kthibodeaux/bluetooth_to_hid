@@ -1,0 +1,10 @@
+menu "BLE keyboard"
+
+    config BLE_KEYBOARD_LOG_REPORTS
+        bool "Log every received keyboard report as hex"
+        default n
+        help
+            Logs each 8-byte boot report as it arrives from the keyboard.
+            Useful for debugging; noisy in normal use.
+
+endmenu

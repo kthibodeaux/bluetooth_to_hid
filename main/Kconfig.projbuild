@@ -1,0 +1,24 @@
+menu "Bluetooth to HID bridge"
+
+    config BRIDGE_USB_SELFTEST
+        bool "Type a test string over USB at boot"
+        default n
+        help
+            Once the USB host configures the keyboard, wait a few seconds and
+            type BRIDGE_USB_SELFTEST_TEXT once. Confirms the host/KVM sees a
+            working keyboard without any Bluetooth involved.
+
+    config BRIDGE_USB_SELFTEST_TEXT
+        string "Test string"
+        depends on BRIDGE_USB_SELFTEST
+        default "esp32s3 usb keyboard ok "
+        help
+            Letters, digits, space and basic punctuation (US layout). No
+            Enter is sent, so nothing gets submitted on the host.
+
+    config BRIDGE_USB_SELFTEST_DELAY_MS
+        int "Delay after USB is ready before typing (ms)"
+        depends on BRIDGE_USB_SELFTEST
+        default 5000
+
+endmenu

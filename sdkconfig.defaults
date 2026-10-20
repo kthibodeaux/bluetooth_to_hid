@@ -1,0 +1,30 @@
+# Target
+CONFIG_IDF_TARGET="esp32s3"
+
+# Console stays on UART0 (the dev board's UART/bridge port). TinyUSB owns the
+# native USB port, so USB-Serial-JTAG must not be used as primary or secondary.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Bluetooth: BLE only, NimBLE host, central role (we connect out to the keyboard)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_GATT_CLIENT=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# Pairing: legacy + LE Secure Connections, bonds persisted to NVS
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=y
+CONFIG_BT_NIMBLE_SM_LEGACY=y
+CONFIG_BT_NIMBLE_SM_SC=y
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+# Maximum TX power (+20 dBm instead of the default +9). The bridge typically
+# sits next to a USB hub / KVM, which are noisy at 2.4 GHz.
+CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_P20=y
+# Keep the NimBLE stack's own logging quiet
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+
+# TinyUSB: one HID interface
+CONFIG_TINYUSB_HID_COUNT=1
