@@ -11,10 +11,14 @@ extern "C" {
 /** Length of a boot-protocol keyboard report: modifiers, reserved, 6 keycodes. */
 #define USB_KEYBOARD_REPORT_LEN 8
 
+/** Simultaneous consumer (media key) usages per consumer report. */
+#define USB_KEYBOARD_CONSUMER_MAX 4
+
 /**
- * Install the TinyUSB driver on the native USB port and present a single
- * boot-protocol keyboard interface. Returns once the driver is installed;
- * the host may enumerate the device some time later.
+ * Install the TinyUSB driver on the native USB port and present a
+ * boot-protocol keyboard interface, plus a Consumer Control interface for
+ * media keys if CONFIG_USB_KEYBOARD_MEDIA_KEYS is set. Returns once the
+ * driver is installed; the host may enumerate the device some time later.
  */
 esp_err_t usb_keyboard_init(void);
 
@@ -29,7 +33,15 @@ bool usb_keyboard_is_ready(void);
  */
 esp_err_t usb_keyboard_send_report(const uint8_t report[USB_KEYBOARD_REPORT_LEN]);
 
-/** Send an all-zero report so no key or modifier stays held on the host. */
+/**
+ * Send the consumer control usages currently held (e.g. 0xE9 Volume Up),
+ * zero-filled; all zero releases. Same return values as
+ * usb_keyboard_send_report(), plus ESP_ERR_NOT_SUPPORTED when media keys are
+ * disabled in menuconfig.
+ */
+esp_err_t usb_keyboard_send_consumer(const uint16_t usages[USB_KEYBOARD_CONSUMER_MAX]);
+
+/** Release every key, modifier and media key on the host. */
 esp_err_t usb_keyboard_release_all(void);
 
 #ifdef __cplusplus

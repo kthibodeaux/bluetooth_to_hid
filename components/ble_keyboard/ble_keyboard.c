@@ -98,13 +98,19 @@ static struct {
     uint16_t report_map_handle;
     uint16_t protocol_mode_handle;
     bool report_mode;           // true: translate via s_layout; false: boot reports
-    uint16_t input_val_handle;  // the characteristic we subscribed to
+    uint16_t input_val_handle;  // the keyboard characteristic we subscribed to
+    bool have_consumer;         // s_consumer_layout is valid (report mode only)
+    uint16_t consumer_val_handle; // consumer characteristic we subscribed to, if any
     bool discovery_started;
 } s_conn;
 
 static uint8_t s_report_map[MAX_REPORT_MAP_LEN];
 static uint16_t s_report_map_len;
-static hid_kbd_layout_t s_layout;
+static hid_layout_t s_layout;
+static hid_layout_t s_consumer_layout;
+
+_Static_assert(BLE_KEYBOARD_CONSUMER_MAX == HID_CONSUMER_MAX_USAGES,
+               "consumer usage counts must match");
 
 static void start_scan(void);
 static void discover_characteristics(void);
@@ -229,7 +235,75 @@ static void handle_input_notification(struct os_mbuf *om)
     deliver_report(report);
 }
 
+static void handle_consumer_notification(struct os_mbuf *om)
+{
+    uint8_t raw[MAX_INPUT_REPORT_LEN] = {0};
+    uint16_t len = OS_MBUF_PKTLEN(om);
+    if (len > sizeof(raw)) {
+        len = sizeof(raw);
+    }
+    os_mbuf_copydata(om, 0, len, raw);
+
+    uint16_t usages[BLE_KEYBOARD_CONSUMER_MAX];
+    hid_consumer_translate(&s_consumer_layout, raw, len, usages);
+#if CONFIG_BLE_KEYBOARD_LOG_REPORTS
+    ESP_LOGI(TAG, "consumer %04x %04x %04x %04x", usages[0], usages[1], usages[2], usages[3]);
+#endif
+    if (s_config.on_consumer != NULL) {
+        s_config.on_consumer(usages, s_config.ctx);
+    }
+}
+
 // ---- GATT: subscribe ----
+
+static void become_ready(void)
+{
+    ESP_LOGI(TAG, "keyboard ready (%s protocol%s)", s_conn.report_mode ? "report" : "boot",
+             s_conn.consumer_val_handle != 0 ? ", media keys" : "");
+    set_state(BLE_KEYBOARD_STATE_READY);
+}
+
+static int write_cccd(uint16_t cccd_handle, ble_gatt_attr_fn *cb)
+{
+    const uint8_t enable_notify[2] = {0x01, 0x00};
+    return ble_gattc_write_flat(s_conn.conn_handle, cccd_handle,
+                                enable_notify, sizeof(enable_notify), cb, NULL);
+}
+
+static int on_consumer_cccd_written(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                    struct ble_gatt_attr *attr, void *arg)
+{
+    (void)conn_handle;
+    (void)attr;
+    (void)arg;
+    if (error->status != 0) {
+        // Media keys are optional; the keyboard still works without them.
+        ESP_LOGW(TAG, "subscribing to media keys failed (status %d)", error->status);
+        s_conn.consumer_val_handle = 0;
+    }
+    become_ready();
+    return 0;
+}
+
+static const report_chr_t *find_input_report(uint8_t report_id);
+
+static void subscribe_consumer_report(void)
+{
+    const report_chr_t *r = s_conn.have_consumer
+                                ? find_input_report(s_consumer_layout.report_id)
+                                : NULL;
+    if (r == NULL || r->cccd_handle == 0 || r->val_handle == s_conn.input_val_handle) {
+        become_ready();
+        return;
+    }
+    s_conn.consumer_val_handle = r->val_handle;
+    int rc = write_cccd(r->cccd_handle, on_consumer_cccd_written);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "media key CCCD write failed to start (rc %d)", rc);
+        s_conn.consumer_val_handle = 0;
+        become_ready();
+    }
+}
 
 static int on_cccd_written(uint16_t conn_handle, const struct ble_gatt_error *error,
                            struct ble_gatt_attr *attr, void *arg)
@@ -242,8 +316,11 @@ static int on_cccd_written(uint16_t conn_handle, const struct ble_gatt_error *er
         disconnect();
         return 0;
     }
-    ESP_LOGI(TAG, "keyboard ready (%s protocol)", s_conn.report_mode ? "report" : "boot");
-    set_state(BLE_KEYBOARD_STATE_READY);
+    if (s_conn.report_mode) {
+        subscribe_consumer_report();
+    } else {
+        become_ready();
+    }
     return 0;
 }
 
@@ -261,9 +338,7 @@ static void subscribe(uint16_t val_handle, uint16_t cccd_handle)
         }
     }
 
-    const uint8_t enable_notify[2] = {0x01, 0x00};
-    int rc = ble_gattc_write_flat(s_conn.conn_handle, cccd_handle,
-                                  enable_notify, sizeof(enable_notify), on_cccd_written, NULL);
+    int rc = write_cccd(cccd_handle, on_cccd_written);
     if (rc != 0) {
         ESP_LOGE(TAG, "CCCD write failed to start (rc %d)", rc);
         disconnect();
@@ -277,23 +352,34 @@ static void subscribe(uint16_t val_handle, uint16_t cccd_handle)
 
 static void read_next_report_reference(void);
 
-static void subscribe_keyboard_report(void)
+// The input Report characteristic carrying `report_id`. Without Report
+// Reference descriptors, a lone input report is assumed to be the one.
+static const report_chr_t *find_input_report(uint8_t report_id)
 {
     for (int i = 0; i < s_conn.report_count; i++) {
         const report_chr_t *r = &s_conn.reports[i];
         bool id_matches = r->ref_handle != 0
-                              ? (r->report_type == REPORT_TYPE_INPUT && r->report_id == s_layout.report_id)
-                              : (s_conn.report_count == 1); // no reference: only safe if unambiguous
+                              ? (r->report_type == REPORT_TYPE_INPUT && r->report_id == report_id)
+                              : (s_conn.report_count == 1);
         if (id_matches) {
-            if (r->cccd_handle == 0) {
-                ESP_LOGE(TAG, "keyboard input report has no CCCD; can't subscribe");
-                return;
-            }
-            subscribe(r->val_handle, r->cccd_handle);
-            return;
+            return r;
         }
     }
-    ESP_LOGE(TAG, "no Report characteristic carries keyboard report ID %u", s_layout.report_id);
+    return NULL;
+}
+
+static void subscribe_keyboard_report(void)
+{
+    const report_chr_t *r = find_input_report(s_layout.report_id);
+    if (r == NULL) {
+        ESP_LOGE(TAG, "no Report characteristic carries keyboard report ID %u", s_layout.report_id);
+        return;
+    }
+    if (r->cccd_handle == 0) {
+        ESP_LOGE(TAG, "keyboard input report has no CCCD; can't subscribe");
+        return;
+    }
+    subscribe(r->val_handle, r->cccd_handle);
 }
 
 static int on_report_reference(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -340,7 +426,7 @@ static void log_layout(void)
 {
     bool nkro = false;
     for (int i = 0; i < s_layout.field_count; i++) {
-        const hid_kbd_field_t *f = &s_layout.fields[i];
+        const hid_field_t *f = &s_layout.fields[i];
         if (!f->is_array && f->usage_min < 0xE0 && f->count > 8) {
             nkro = true;
         }
@@ -385,6 +471,13 @@ static int on_report_map(uint16_t conn_handle, const struct ble_gatt_error *erro
         return 0;
     }
     log_layout();
+
+    s_conn.have_consumer = hid_consumer_layout_parse(s_report_map, s_report_map_len, &s_consumer_layout) &&
+                           (s_consumer_layout.report_bits + 7) / 8 <= MAX_INPUT_REPORT_LEN;
+    if (s_conn.have_consumer) {
+        ESP_LOGI(TAG, "media key report: id %u, %u bytes", s_consumer_layout.report_id,
+                 (s_consumer_layout.report_bits + 7) / 8);
+    }
 
     s_conn.ref_index = 0;
     read_next_report_reference();
@@ -844,6 +937,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             s_conn.input_val_handle != 0 &&
             event->notify_rx.attr_handle == s_conn.input_val_handle) {
             handle_input_notification(event->notify_rx.om);
+        } else if (event->notify_rx.conn_handle == s_conn.conn_handle &&
+                   s_conn.consumer_val_handle != 0 &&
+                   event->notify_rx.attr_handle == s_conn.consumer_val_handle) {
+            handle_consumer_notification(event->notify_rx.om);
         }
         return 0;
 

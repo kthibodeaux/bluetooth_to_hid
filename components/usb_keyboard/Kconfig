@@ -1,0 +1,13 @@
+menu "USB keyboard"
+
+    config USB_KEYBOARD_MEDIA_KEYS
+        bool "Media keys (second HID interface)"
+        default y
+        help
+            Add a Consumer Control HID interface, after the boot keyboard
+            interface, so volume, mute and playback keys reach the host.
+            The keyboard interface itself is unchanged, so BIOS and KVM
+            keyboard emulation still see a plain boot keyboard. Disable if a
+            KVM or host refuses composite devices.
+
+endmenu

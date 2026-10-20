@@ -17,14 +17,16 @@ accept it like any other wired keyboard.
 
 - `components/ble_keyboard`: BLE central / HID-over-GATT host (NimBLE).
   Handles scanning, pairing, bonding (in NVS), and reconnects, and delivers
-  raw 8-byte boot reports plus connection-state callbacks. It knows nothing
-  about USB.
+  raw 8-byte boot reports, held media keys, and connection-state callbacks.
+  It knows nothing about USB.
 - `components/usb_keyboard`: a TinyUSB (`espressif/esp_tinyusb`) device with
-  a single boot keyboard interface. Provides `usb_keyboard_send_report()` and
-  `usb_keyboard_release_all()`. It knows nothing about Bluetooth.
+  a boot keyboard interface and, optionally, a second Consumer Control
+  interface for media keys. Provides `usb_keyboard_send_report()`,
+  `usb_keyboard_send_consumer()` and `usb_keyboard_release_all()`. It knows
+  nothing about Bluetooth.
 - `main`: wiring only. Initializes NVS and both components and forwards
-  reports through a FreeRTOS queue. On BLE disconnect it sends an
-  all-keys-released report. If a USB send fails while a host is attached, it
+  reports through a FreeRTOS queue. On BLE disconnect it releases all keys
+  and media keys. If a USB send fails while a host is attached, it
   retries the latest key state until it goes through, so a lost key-up can't
   leave a key stuck down on the KVM.
 
@@ -99,7 +101,21 @@ to it. Otherwise the S3 uses report mode:
 - It subscribes to that report and converts each one to the 8-byte boot format.
 
 Both 6-key keycode arrays and NKRO bitmaps (for example ZMK with NKRO
-enabled) are handled. Media keys and other non-keyboard reports are ignored.
+enabled) are handled.
+
+## Media keys
+
+In report mode, the S3 also finds the keyboard's Consumer Control report
+(volume, mute, play/pause, and so on), subscribes to it, and forwards the held
+keys to a second USB HID interface. The keyboard interface stays first and
+unchanged, so BIOS screens and KVM keyboard emulation still see a plain boot
+keyboard. Hosts behind a pass-through hub or port get the media keys too.
+
+Media keys only work for keyboards read in report mode. A keyboard read
+through the Boot Keyboard Input Report doesn't send them.
+
+If a KVM or host objects to the second interface, turn it off with
+`idf.py menuconfig` → *Component config* → *USB keyboard* → *Media keys*.
 
 The bridge uses its own random static Bluetooth address, saved in NVS, rather
 than the chip's fixed one. Resetting bonds (below) also picks a new address,
